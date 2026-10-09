@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Epub.js - Leitor com Transições 3D, Paginação Fiel e Extração Headless</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js"></script>
+  <script src="../dist/epub.js"></script>
+  <style>
+    :root {
+      --bg-gradient: radial-gradient(circle at 50% 20%, #1e2430 0%, #0f1219 100%);
+      --card-bg: #fcf9f2;
+      --card-text: #2a2520;
+      --accent: #d4a373;
+      --accent-hover: #b08968;
+      --accent-glow: rgba(212, 163, 115, 0.35);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --surface: rgba(255, 255, 255, 0.04);
+      --spine-shadow: linear-gradient(90deg, rgba(0,0,0,0.18) 0%, rgba(0,0,0,0.02) 8%, rgba(0,0,0,0) 15%);
+    }
+
+    [data-theme="dark-book"] {
+      --card-bg: #1e222b;
+      --card-text: #e2e8f0;
+      --spine-shadow: linear-gradient(90deg, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.05) 8%, rgba(0,0,0,0) 15%);
+    }
+
+    [data-theme="sepia"] {
+      --card-bg: #f4ecd8;
+      --card-text: #433422;
+      --spine-shadow: linear-gradient(90deg, rgba(70,45,20,0.2) 0%, rgba(70,45,20,0.03) 8%, rgba(0,0,0,0) 15%);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-gradient);
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+
+    /* Top Navigation Header */
+    header {
+      background: rgba(15, 18, 25, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-color);
+      padding: 14px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-badge {
+      background: linear-gradient(135deg, #d4a373 0%, #b08968 100%);
+      color: #111;
+      font-weight: 700;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .brand-title {
+      font-family: 'Cinzel', serif;
+      font-size: 18px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: 0.5px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .btn {
+      background: var(--surface);
+      color: #e2e8f0;
+      border: 1px solid var(--border-color);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.2);
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+      color: #1a1612;
+      border: none;
+      font-weight: 600;
+      box-shadow: 0 4px 12px var(--accent-glow);
+    }
+
+    .btn-primary:hover {
+      filter: brightness(1.1);
+      transform: translateY(-1px);
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 20px;
+      max-width: 1200px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    /* Feature Ribbon */
+    .feature-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 20px;
+      justify-content: center;
+    }
+
+    .tag {
+      background: rgba(212, 163, 115, 0.12);
+      border: 1px solid rgba(212, 163, 115, 0.25);
+      color: #eed7be;
+      font-size: 12px;
+      padding: 4px 12px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .tag-icon {
+      font-size: 14px;
+    }
+
+    /* Book Stage & 3D Perspective */
+    .stage-container {
+      perspective: 2000px;
+      width: 100%;
+      max-width: 860px;
+      display: flex;
+      justify-content: center;
+      position: relative;
+    }
+
+    .book-wrapper {
+      position: relative;
+      width: 100%;
+      max-width: 760px;
+      height: 600px;
+      background: transparent;
+      border-radius: 12px;
+      box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    }
+
+    /* Page Surfaces */
+    .page-sheet {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--card-bg);
+      color: var(--card-text);
+      border-radius: 10px;
+      overflow: hidden;
+      padding: 48px 56px 40px 56px;
+      box-shadow: inset 0 0 30px rgba(0, 0, 0, 0.02), 0 4px 16px rgba(0, 0, 0, 0.15);
+      transform-style: preserve-3d;
+      backface-visibility: hidden;
+      transition: box-shadow 0.4s ease;
+    }
+
+    /* Realistic Spine Shadow overlay */
+    .page-sheet::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--spine-shadow);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    /* Underlying Page (Shown underneath during curl) */
+    .page-sheet.underneath {
+      z-index: 1;
+    }
+
+    /* Active Page */
+    .page-sheet.active {
+      z-index: 5;
+    }
+
+    /* Flipping Page with 3D Page Curl animation */
+    .page-sheet.curling-next {
+      z-index: 10;
+      transform-origin: left center;
+      animation: pageCurlNext 0.7s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+    }
+
+    .page-sheet.curling-prev {
+      z-index: 10;
+      transform-origin: right center;
+      animation: pageCurlPrev 0.7s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+    }
+
+    @keyframes pageCurlNext {
+      0% {
+        transform: rotateY(0deg) skewY(0deg);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+      }
+      35% {
+        transform: rotateY(-38deg) skewY(2deg) scale(0.98);
+        box-shadow: -25px 12px 35px rgba(0, 0, 0, 0.35);
+      }
+      70% {
+        transform: rotateY(-75deg) skewY(1deg) scale(0.96);
+        box-shadow: -35px 15px 40px rgba(0, 0, 0, 0.25);
+      }
+      100% {
+        transform: rotateY(-180deg) skewY(0deg);
+        opacity: 0;
+      }
+    }
+
+    @keyframes pageCurlPrev {
+      0% {
+        transform: rotateY(0deg) skewY(0deg);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+      }
+      35% {
+        transform: rotateY(38deg) skewY(-2deg) scale(0.98);
+        box-shadow: 25px 12px 35px rgba(0, 0, 0, 0.35);
+      }
+      70% {
+        transform: rotateY(75deg) skewY(-1deg) scale(0.96);
+        box-shadow: 35px 15px 40px rgba(0, 0, 0, 0.25);
+      }
+      100% {
+        transform: rotateY(180deg) skewY(0deg);
+        opacity: 0;
+      }
+    }
+
+    /* Page Content Typography (Rendered from book.getPage) */
+    .page-content-wrapper {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .page-header {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      opacity: 0.5;
+      margin-bottom: 24px;
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+      padding-bottom: 8px;
+    }
+
+    .page-body {
+      flex: 1;
+      font-family: 'Lora', Georgia, serif;
+      font-size: 16px;
+      line-height: 1.75;
+      overflow: hidden;
+      color: inherit;
+    }
+
+    .page-body p {
+      margin-bottom: 1.2em;
+      text-indent: 1.5em;
+    }
+
+    .page-body h1, .page-body h2, .page-body h3 {
+      font-family: 'Cinzel', serif;
+      margin-bottom: 0.8em;
+      line-height: 1.3;
+      text-indent: 0;
+    }
+
+    .page-footer {
+      font-size: 12px;
+      opacity: 0.6;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-top: 1px solid rgba(0, 0, 0, 0.06);
+      padding-top: 12px;
+      margin-top: 20px;
+    }
+
+    /* Reader Navigation Floating Arrows */
+    .nav-arrow {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: rgba(30, 36, 48, 0.7);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      z-index: 20;
+      user-select: none;
+      font-size: 20px;
+    }
+
+    .nav-arrow:hover {
+      background: rgba(212, 163, 115, 0.9);
+      color: #111;
+      transform: translateY(-50%) scale(1.08);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+    }
+
+    .nav-arrow.prev {
+      left: -24px;
+    }
+
+    .nav-arrow.next {
+      right: -24px;
+    }
+
+    /* Faithful Progress Bar & Chapter Markers */
+    .controls-panel {
+      width: 100%;
+      max-width: 760px;
+      margin-top: 28px;
+      background: rgba(15, 18, 25, 0.7);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 16px 20px;
+    }
+
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      color: #94a3b8;
+      margin-bottom: 10px;
+    }
+
+    .chapter-title {
+      font-weight: 600;
+      color: #f1f5f9;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .progress-container {
+      position: relative;
+      height: 8px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      cursor: pointer;
+      margin-bottom: 12px;
+    }
+
+    .progress-fill {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      background: linear-gradient(90deg, #d4a373 0%, #faedcd 100%);
+      border-radius: 4px;
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    .chapter-tick {
+      position: absolute;
+      top: -3px;
+      width: 4px;
+      height: 14px;
+      background: rgba(255, 255, 255, 0.4);
+      border-radius: 2px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      z-index: 5;
+    }
+
+    .chapter-tick:hover {
+      background: #fef08a;
+      transform: scaleY(1.3);
+      box-shadow: 0 0 8px #fef08a;
+    }
+
+    .chapter-tick .tooltip {
+      position: absolute;
+      bottom: 22px;
+      left: 50%;
+      transform: translateX(-50%) translateY(4px);
+      background: #0f1219;
+      border: 1px solid var(--border-color);
+      color: #f1f5f9;
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
+      transition: all 0.2s ease;
+    }
+
+    .chapter-tick:hover .tooltip {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* Footer & HTML Inspector Modal */
+    .controls-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .inspector-box {
+      margin-top: 24px;
+      width: 100%;
+      max-width: 760px;
+      background: #0d1117;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 16px;
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 12px;
+      color: #8b949e;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .inspector-header {
+      display: flex;
+      justify-content: space-between;
+      color: #c9d1d9;
+      font-weight: 600;
+      margin-bottom: 8px;
+      font-family: 'Inter', sans-serif;
+    }
+
+    .code-snippet {
+      color: #7ee787;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* Loader */
+    .loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 18, 25, 0.85);
+      backdrop-filter: blur(8px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+      border-radius: 12px;
+      gap: 16px;
+    }
+
+    .spinner {
+      width: 44px;
+      height: 44px;
+      border: 3px solid rgba(212, 163, 115, 0.2);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <div class="brand-badge">Epub.js V2</div>
+      <div class="brand-title">Leitor Headless com Dobradura</div>
+    </div>
+    <div class="header-actions">
+      <select id="themeSelect" class="btn">
+        <option value="light">Papel Creme</option>
+        <option value="dark-book">Modo Escuro</option>
+        <option value="sepia">Sépia Clássico</option>
+      </select>
+      <button id="btnZoomIn" class="btn" title="Aumentar Fonte">A+</button>
+      <button id="btnZoomOut" class="btn" title="Diminuir Fonte">A-</button>
+      <button id="btnToggleInspector" class="btn btn-primary">Ver Payload HTML</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="feature-tags">
+      <span class="tag"><span class="tag-icon">✨</span> 1. Ondulação 3D (Page Curl)</span>
+      <span class="tag"><span class="tag-icon">📊</span> 2. Paginação Fiel e Marcadores de Capítulo</span>
+      <span class="tag"><span class="tag-icon">⚡</span> 3. Extração Headless de HTML (Sem Iframe)</span>
+    </div>
+
+    <!-- 3D Book Stage -->
+    <div class="stage-container">
+      <div class="nav-arrow prev" id="btnPrevPage" title="Página Anterior">‹</div>
+
+      <div class="book-wrapper" id="bookWrapper">
+        <!-- Loading Overlay -->
+        <div class="loading-overlay" id="loadingOverlay">
+          <div class="spinner"></div>
+          <p id="loadingStatus">Calculando paginação fiel e analisando capítulos...</p>
+        </div>
+
+        <!-- Underneath Page (Visible during 3D Curl) -->
+        <div class="page-sheet underneath" id="sheetUnderneath">
+          <div class="page-content-wrapper">
+            <div class="page-header">
+              <span id="underneathChapter">...</span>
+              <span id="underneathBookTitle">Alice's Adventures</span>
+            </div>
+            <div class="page-body" id="underneathBody">
+              <!-- Content injected via book.getPage -->
+            </div>
+            <div class="page-footer">
+              <span id="underneathProgress">Progresso: 0%</span>
+              <span id="underneathPageNum">Pág. -</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Active Page (Foreground) -->
+        <div class="page-sheet active" id="sheetActive">
+          <div class="page-content-wrapper">
+            <div class="page-header">
+              <span id="activeChapter">Carregando Capítulo...</span>
+              <span id="activeBookTitle">Alice's Adventures</span>
+            </div>
+            <div class="page-body" id="activeBody">
+              <!-- Content injected via book.getPage -->
+            </div>
+            <div class="page-footer">
+              <span id="activeProgress">Progresso: 0%</span>
+              <span id="activePageNum">Pág. 1</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="nav-arrow next" id="btnNextPage" title="Próxima Página">›</div>
+    </div>
+
+    <!-- Faithful Progress Bar with Chapter Markers -->
+    <div class="controls-panel">
+      <div class="progress-meta">
+        <span class="chapter-title" id="lblCurrentChapter">
+          📖 Carregando capítulo...
+        </span>
+        <span id="lblPageCounter">
+          Página 1 de - (0%)
+        </span>
+      </div>
+
+      <!-- Interactive Progress Bar with Chapter Ticks -->
+      <div class="progress-container" id="progressBar">
+        <div class="progress-fill" id="progressFill"></div>
+        <div id="chapterTicks"></div>
+      </div>
+
+      <div class="controls-row">
+        <div>
+          <label style="font-size: 12px; color: #94a3b8; margin-right: 8px;">Ir para capítulo:</label>
+          <select id="chapterSelect" class="btn" style="max-width: 280px;"></select>
+        </div>
+        <div style="font-size: 12px; color: #94a3b8;">
+          💡 Use as setas <strong>‹</strong> e <strong>›</strong> do teclado para virar páginas
+        </div>
+      </div>
+    </div>
+
+    <!-- Clean HTML Payload Inspector -->
+    <div class="inspector-box" id="inspectorBox" style="display: none;">
+      <div class="inspector-header">
+        <span>Payload retornado por <code>book.getPage(pageNumber)</code>:</span>
+        <span id="inspectorMeta">0 caracteres extraídos</span>
+      </div>
+      <div class="code-snippet" id="inspectorCode">// O HTML específico da página aparecerá aqui...</div>
+    </div>
+  </main>
+
+  <script>
+    // State
+    let book = null;
+    let currentPage = 1;
+    let totalPages = 1;
+    let chapterMarkers = [];
+    let isFlipping = false;
+    let currentFontSize = 16;
+
+    const sheetActive = document.getElementById("sheetActive");
+    const sheetUnderneath = document.getElementById("sheetUnderneath");
+    const activeBody = document.getElementById("activeBody");
+    const underneathBody = document.getElementById("underneathBody");
+    const activeChapter = document.getElementById("activeChapter");
+    const underneathChapter = document.getElementById("underneathChapter");
+    const activePageNum = document.getElementById("activePageNum");
+    const underneathPageNum = document.getElementById("underneathPageNum");
+    const activeProgress = document.getElementById("activeProgress");
+    const underneathProgress = document.getElementById("underneathProgress");
+    const progressFill = document.getElementById("progressFill");
+    const progressBar = document.getElementById("progressBar");
+    const chapterTicks = document.getElementById("chapterTicks");
+    const lblCurrentChapter = document.getElementById("lblCurrentChapter");
+    const lblPageCounter = document.getElementById("lblPageCounter");
+    const chapterSelect = document.getElementById("chapterSelect");
+    const loadingOverlay = document.getElementById("loadingOverlay");
+    const loadingStatus = document.getElementById("loadingStatus");
+    const inspectorBox = document.getElementById("inspectorBox");
+    const inspectorCode = document.getElementById("inspectorCode");
+    const inspectorMeta = document.getElementById("inspectorMeta");
+
+    // Initialize book
+    async function initReader() {
+      try {
+        loadingStatus.textContent = "Abrindo o livro e descompactando capítulos...";
+        // Load local epub fixture
+        book = ePub("../test/fixtures/alice.epub");
+
+        await book.ready;
+        loadingStatus.textContent = "Calculando paginação fiel com base no layout...";
+
+        // Step 1: Generate faithful pages
+        const pages = await book.generateTrueLocations({
+          width: 760,
+          height: 600,
+          charsPerPage: 950
+        });
+
+        totalPages = book.locations.totalPages || pages.length;
+
+        // Step 2: Extract enriched chapter markers
+        loadingStatus.textContent = "Mapeando posições exatas dos capítulos na barra de progresso...";
+        chapterMarkers = await book.getChapterMarkers();
+
+        renderChapterControls();
+        renderChapterTicks();
+
+        // Step 3: Load first page using new getPage headless API
+        await renderPage(1, false);
+
+        loadingOverlay.style.display = "none";
+      } catch (err) {
+        console.error("Erro ao inicializar:", err);
+        loadingStatus.textContent = "Erro ao carregar livro: " + err.message;
+      }
+    }
+
+    // Populate Chapter Dropdown
+    function renderChapterControls() {
+      chapterSelect.innerHTML = "";
+      chapterMarkers.forEach((chap) => {
+        const opt = document.createElement("option");
+        opt.value = chap.page;
+        opt.textContent = `${chap.label || "Capítulo"} (Pág. ${chap.page})`;
+        chapterSelect.appendChild(opt);
+      });
+
+      chapterSelect.addEventListener("change", (e) => {
+        flipToPage(parseInt(e.target.value));
+      });
+    }
+
+    // Render interactive Chapter Ticks on the progress bar
+    function renderChapterTicks() {
+      chapterTicks.innerHTML = "";
+      chapterMarkers.forEach((chap) => {
+        const tick = document.createElement("div");
+        tick.className = "chapter-tick";
+        const percent = Math.min(100, Math.max(0, ((chap.page - 1) / (totalPages - 1 || 1)) * 100));
+        tick.style.left = `${percent}%`;
+
+        const tooltip = document.createElement("div");
+        tooltip.className = "tooltip";
+        tooltip.textContent = `${chap.label || "Capítulo"} • Pág. ${chap.page}`;
+        tick.appendChild(tooltip);
+
+        tick.addEventListener("click", (e) => {
+          e.stopPropagation();
+          flipToPage(chap.page);
+        });
+
+        chapterTicks.appendChild(tick);
+      });
+    }
+
+    // Render page content directly (Headless HTML Extraction)
+    async function renderPage(pageNum, isUnderneath = false) {
+      const pageData = await book.getPage(pageNum);
+
+      const targetBody = isUnderneath ? underneathBody : activeBody;
+      const targetChapter = isUnderneath ? underneathChapter : activeChapter;
+      const targetPageNum = isUnderneath ? underneathPageNum : activePageNum;
+      const targetProgress = isUnderneath ? underneathProgress : activeProgress;
+
+      targetBody.innerHTML = pageData.html || "<p>Página em branco</p>";
+      const chapTitle = pageData.chapter ? pageData.chapter.label : "Capítulo";
+      targetChapter.textContent = chapTitle;
+      targetPageNum.textContent = `Pág. ${pageNum} de ${totalPages}`;
+      const percentInt = Math.round(pageData.percentage * 100);
+      targetProgress.textContent = `Progresso: ${percentInt}%`;
+
+      if (!isUnderneath) {
+        currentPage = pageNum;
+        progressFill.style.width = `${percentInt}%`;
+        lblCurrentChapter.textContent = `📖 ${chapTitle}`;
+        lblPageCounter.textContent = `Página ${pageNum} de ${totalPages} (${percentInt}%)`;
+
+        // Update inspector with clean extracted HTML
+        inspectorCode.textContent = pageData.html;
+        inspectorMeta.textContent = `${pageData.html.length} bytes • CFI: ${pageData.startCfi.substring(0, 30)}...`;
+
+        // Sync dropdown
+        const matched = chapterMarkers.filter(c => c.page <= pageNum).pop();
+        if (matched) {
+          chapterSelect.value = matched.page;
+        }
+      }
+    }
+
+    // Flip to page with mobile-style 3D page curl animation
+    async function flipToPage(targetPage, direction = "next") {
+      if (isFlipping || targetPage === currentPage || targetPage < 1 || targetPage > totalPages) {
+        return;
+      }
+      isFlipping = true;
+
+      const dir = targetPage > currentPage ? "next" : "prev";
+
+      // 1. Preload target page in underneath sheet
+      await renderPage(targetPage, true);
+
+      // 2. Trigger 3D curl animation on active sheet
+      const animClass = dir === "next" ? "curling-next" : "curling-prev";
+      sheetActive.classList.add(animClass);
+
+      // 3. Swap when animation ends
+      setTimeout(async () => {
+        sheetActive.classList.remove(animClass);
+        // Transfer target page to active sheet
+        await renderPage(targetPage, false);
+        isFlipping = false;
+      }, 680);
+    }
+
+    // Navigation triggers
+    document.getElementById("btnNextPage").addEventListener("click", () => {
+      if (currentPage < totalPages) {
+        flipToPage(currentPage + 1, "next");
+      }
+    });
+
+    document.getElementById("btnPrevPage").addEventListener("click", () => {
+      if (currentPage > 1) {
+        flipToPage(currentPage - 1, "prev");
+      }
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowRight") {
+        if (currentPage < totalPages) flipToPage(currentPage + 1, "next");
+      } else if (e.key === "ArrowLeft") {
+        if (currentPage > 1) flipToPage(currentPage - 1, "prev");
+      }
+    });
+
+    // Click on progress bar to jump
+    progressBar.addEventListener("click", (e) => {
+      const rect = progressBar.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const ratio = Math.max(0, Math.min(1, clickX / rect.width));
+      const target = Math.round(ratio * (totalPages - 1)) + 1;
+      flipToPage(target);
+    });
+
+    // Theme selector
+    document.getElementById("themeSelect").addEventListener("change", (e) => {
+      document.body.removeAttribute("data-theme");
+      if (e.target.value !== "light") {
+        document.body.setAttribute("data-theme", e.target.value);
+      }
+    });
+
+    // Font size controls
+    document.getElementById("btnZoomIn").addEventListener("click", () => {
+      currentFontSize += 1;
+      activeBody.style.fontSize = `${currentFontSize}px`;
+      underneathBody.style.fontSize = `${currentFontSize}px`;
+    });
+
+    document.getElementById("btnZoomOut").addEventListener("click", () => {
+      if (currentFontSize > 12) {
+        currentFontSize -= 1;
+        activeBody.style.fontSize = `${currentFontSize}px`;
+        underneathBody.style.fontSize = `${currentFontSize}px`;
+      }
+    });
+
+    // Inspector toggle
+    document.getElementById("btnToggleInspector").addEventListener("click", () => {
+      inspectorBox.style.display = inspectorBox.style.display === "none" ? "block" : "none";
+    });
+
+    // Start reader on load
+    window.addEventListener("DOMContentLoaded", initReader);
+  </script>
+</body>
+</html>

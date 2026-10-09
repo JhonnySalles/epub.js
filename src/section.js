@@ -1,10 +1,9 @@
-import { defer } from "./utils/core";
+import { defer, sprint, RangeObject } from "./utils/core";
 import EpubCFI from "./epubcfi";
 import Hook from "./utils/hook";
-import { sprint } from "./utils/core";
 import { replaceBase } from "./utils/replacements";
 import Request from "./utils/request";
-import { DOMParser as XMLDOMSerializer } from "@xmldom/xmldom";
+import { XMLSerializer as XMLDOMSerializer } from "@xmldom/xmldom";
 
 /**
  * Represents a Section of the Book
@@ -290,6 +289,249 @@ class Section {
 	 */
 	cfiFromElement(el) {
 		return new EpubCFI(el, this.cfiBase).toString();
+	}
+
+	/**
+	 * Get a DOM Range for given CFI boundaries in the section
+	 * @param {string|EpubCFI} startCfi
+	 * @param {string|EpubCFI} [endCfi]
+	 * @return {Range|null}
+	 */
+	getPageRange(startCfi, endCfi) {
+		if (!this.document) {
+			return null;
+		}
+
+		let range = null;
+		if (typeof this.document.createRange !== "undefined") {
+			range = this.document.createRange();
+		} else {
+			range = new RangeObject();
+		}
+
+		if (!startCfi && !endCfi) {
+			if (range.selectNodeContents && this.document.body) {
+				range.selectNodeContents(this.document.body);
+			}
+			return range;
+		}
+
+		let startObj = startCfi ? (startCfi instanceof EpubCFI ? startCfi : new EpubCFI(startCfi)) : null;
+		let endObj = endCfi ? (endCfi instanceof EpubCFI ? endCfi : new EpubCFI(endCfi)) : null;
+
+		// If startObj is already a range CFI
+		if (startObj && startObj.range && !endCfi) {
+			return startObj.toRange(this.document);
+		}
+
+		let startRange = startObj ? startObj.toRange(this.document) : null;
+		let endRange = endObj ? endObj.toRange(this.document) : null;
+
+		if (startRange && endRange) {
+			range.setStart(startRange.startContainer, startRange.startOffset);
+			let endContainer = endRange.endContainer || endRange.startContainer;
+			let endOffset = (typeof endRange.endOffset !== "undefined" && endRange.endOffset !== null) ? endRange.endOffset : endRange.startOffset;
+			range.setEnd(endContainer, endOffset);
+		} else if (startRange) {
+			range.setStart(startRange.startContainer, startRange.startOffset);
+			if (this.document.body) {
+				let last = this.document.body.lastChild || this.document.body;
+				range.setEnd(last, (last.nodeType === 3) ? (last.textContent ? last.textContent.length : 0) : 1);
+			}
+		} else if (endRange) {
+			if (this.document.body) {
+				let first = this.document.body.firstChild || this.document.body;
+				range.setStart(first, 0);
+			}
+			let endContainer = endRange.endContainer || endRange.startContainer;
+			let endOffset = (typeof endRange.endOffset !== "undefined" && endRange.endOffset !== null) ? endRange.endOffset : endRange.startOffset;
+			range.setEnd(endContainer, endOffset);
+		}
+
+		return range;
+	}
+
+	/**
+	 * Extract serialized HTML string and plain text for a page range
+	 * @param {string|EpubCFI} startCfi
+	 * @param {string|EpubCFI} [endCfi]
+	 * @param {object} [options]
+	 * @param {boolean} [options.fullDocument=false] wrap in complete html/body
+	 * @param {boolean} [options.includeStyles=true] include style tags from head
+	 * @param {string} [options.className='epub-page-content'] container class
+	 * @param {function} [_request] optional request method for headless / unarchive loading
+	 * @return {Promise<{html: string, text: string, styles: string, cfi: {start: string, end: string}}>}
+	 */
+	getPageHTML(startCfi, endCfi, options = {}, _request) {
+		return this.load(_request).then((contents) => {
+			let range = this.getPageRange(startCfi, endCfi);
+			let fragment = range ? this._extractFragment(range) : null;
+			let text = (range && typeof range.toString === "function" && range.toString())
+				? range.toString()
+				: (fragment && fragment.textContent ? fragment.textContent : "");
+			let html = "";
+			let styles = "";
+
+			// Extract styles from head if requested
+			if (options.includeStyles !== false && this.document) {
+				let styleNodes = this.document.querySelectorAll ? this.document.querySelectorAll("style, link[rel='stylesheet']") : [];
+				for (let i = 0; i < styleNodes.length; i++) {
+					styles += styleNodes[i].outerHTML || "";
+				}
+			}
+
+			if (fragment) {
+				let Serializer;
+				if (typeof XMLSerializer !== "undefined") {
+					Serializer = XMLSerializer;
+				} else {
+					Serializer = XMLDOMSerializer;
+				}
+				let serializer = new Serializer();
+
+				if (typeof document !== "undefined" && document.createElement) {
+					let temp = document.createElement("div");
+					temp.className = options.className || "epub-page-content";
+					temp.appendChild(fragment);
+					html = temp.innerHTML;
+				} else {
+					let tempDoc = this.document.implementation && this.document.implementation.createHTMLDocument ? this.document.implementation.createHTMLDocument("") : null;
+					let tempDiv = tempDoc ? tempDoc.createElement("div") : this.document.createElement("div");
+					tempDiv.className = options.className || "epub-page-content";
+					tempDiv.appendChild(fragment);
+					html = serializer.serializeToString(tempDiv);
+				}
+			}
+
+			if (options.fullDocument) {
+				html = `<!DOCTYPE html><html><head><meta charset="utf-8">${styles}</head><body>${html}</body></html>`;
+			} else if (styles && options.inlineStyles) {
+				html = `${styles}${html}`;
+			}
+
+			return {
+				html: html,
+				text: text,
+				styles: styles,
+				cfi: {
+					start: startCfi ? startCfi.toString() : null,
+					end: endCfi ? endCfi.toString() : null
+				}
+			};
+		});
+	}
+
+	/**
+	 * Extract plain text for a page range
+	 * @param {string|EpubCFI} startCfi
+	 * @param {string|EpubCFI} [endCfi]
+	 * @param {function} [_request]
+	 * @return {Promise<string>}
+	 */
+	getPageText(startCfi, endCfi, _request) {
+		return this.load(_request).then(() => {
+			let range = this.getPageRange(startCfi, endCfi);
+			if (range && typeof range.toString === "function" && range.toString()) {
+				return range.toString();
+			}
+			let fragment = range ? this._extractFragment(range) : null;
+			return fragment && fragment.textContent ? fragment.textContent : "";
+		});
+	}
+
+	/**
+	 * Helper to extract DocumentFragment from range in browser and headless environments
+	 * @private
+	 * @param {Range|RangeObject} range
+	 * @return {DocumentFragment|Node}
+	 */
+	_extractFragment(range) {
+		if (range && typeof range.cloneContents === "function") {
+			return range.cloneContents();
+		}
+
+		let doc = this.document;
+		let fragment = doc && doc.createDocumentFragment ? doc.createDocumentFragment() : null;
+		if (!range || !range.startContainer) {
+			if (doc && doc.body) {
+				let clone = doc.body.cloneNode(true);
+				if (fragment) {
+					while (clone.firstChild) fragment.appendChild(clone.firstChild);
+					return fragment;
+				}
+				return clone;
+			}
+			return fragment;
+		}
+
+		let start = range.startContainer;
+		let end = range.endContainer || range.startContainer;
+		let startOffset = range.startOffset || 0;
+		let endOffset = (typeof range.endOffset !== "undefined" && range.endOffset !== null) ? range.endOffset : (end.textContent ? end.textContent.length : 0);
+
+		if (start === end && start.nodeType === 3) {
+			let text = start.nodeValue ? start.nodeValue.substring(startOffset, endOffset) : "";
+			let node = doc.createTextNode(text);
+			if (fragment) { fragment.appendChild(node); return fragment; }
+			return node;
+		}
+
+		let commonAncestor = range.commonAncestorContainer || (doc.body || doc.documentElement);
+		let inRange = false;
+		let collectedNodes = [];
+
+		let walk = (node) => {
+			if (!node) return false;
+			if (node === start) {
+				inRange = true;
+				if (node.nodeType === 3) {
+					let text = node.nodeValue ? node.nodeValue.substring(startOffset) : "";
+					collectedNodes.push(doc.createTextNode(text));
+					if (start === end) { inRange = false; return true; }
+					return false;
+				}
+			}
+			if (inRange && node !== start && node !== end) {
+				let containsEnd = false;
+				let cur = end;
+				while (cur) {
+					if (cur === node) { containsEnd = true; break; }
+					cur = cur.parentNode;
+				}
+				if (!containsEnd) {
+					collectedNodes.push(node.cloneNode(true));
+					return false;
+				}
+			}
+			if (node === end) {
+				if (node.nodeType === 3) {
+					let text = node.nodeValue ? node.nodeValue.substring(0, endOffset) : "";
+					collectedNodes.push(doc.createTextNode(text));
+				} else {
+					collectedNodes.push(node.cloneNode(true));
+				}
+				inRange = false;
+				return true;
+			}
+			let children = node.childNodes;
+			if (children) {
+				for (let i = 0; i < children.length; i++) {
+					let done = walk(children[i]);
+					if (done) return true;
+				}
+			}
+			return false;
+		};
+
+		walk(commonAncestor);
+
+		if (fragment) {
+			for (let i = 0; i < collectedNodes.length; i++) {
+				fragment.appendChild(collectedNodes[i]);
+			}
+			return fragment;
+		}
+		return collectedNodes;
 	}
 
 	/**

@@ -231,7 +231,7 @@ class Book {
 
 		if(url) {
 			this.open(url, this.settings.openAs).catch((error) => {
-				var err = new Error("Cannot load book at "+ url );
+				var err = new Error("Cannot load book at "+ url + ": " + (error && (error.stack || error.message) ? (error.stack || error.message) : error));
 				this.emit(EVENTS.BOOK.OPEN_FAILED, err);
 			});
 		}
@@ -710,6 +710,106 @@ class Book {
 		return item.load(_request).then(function (contents) {
 			var range = cfi.toRange(item.document);
 			return range;
+		});
+	}
+
+	/**
+	 * Generate faithful, layout-accurate page locations
+	 * @param {object} [layoutSettings]
+	 * @return {Promise<Array<object>>}
+	 */
+	generateTrueLocations(layoutSettings) {
+		return this.ready.then(() => {
+			return this.locations.generateTrueLocations(layoutSettings);
+		});
+	}
+
+	/**
+	 * Get enriched chapter markers for progress bar and chapter jumps
+	 * @return {Promise<Array<object>>}
+	 */
+	getChapterMarkers() {
+		return this.loaded.navigation.then(() => {
+			if (!this.navigation) {
+				return [];
+			}
+			return this.navigation.getChapterMarkers(this.locations, this.spine);
+		});
+	}
+
+	/**
+	 * Get rendered HTML and plain text for a specific page without needing an iframe
+	 * @param {number} pageNumber 1-indexed page number
+	 * @param {object} [options] extraction options
+	 * @return {Promise<object>} { pageNumber, totalPages, percentage, chapter, html, text, styles, cfi }
+	 */
+	getPage(pageNumber, options = {}) {
+		return this.ready.then(() => {
+			let ensureLocations = (this.locations.totalPages > 0)
+				? Promise.resolve()
+				: this.generateTrueLocations(options);
+
+			return ensureLocations.then(() => {
+				let page = Math.max(1, Math.min(this.locations.totalPages || 1, pageNumber || 1));
+				let pageInfo = this.locations.pageInfo(page);
+
+				if (!pageInfo) {
+					let cfi = this.locations.cfiFromPage(page);
+					let section = this.spine.get(cfi) || this.spine.first();
+					return section.getPageHTML(cfi, null, options, this.load.bind(this)).then(res => {
+						return {
+							pageNumber: page,
+							totalPages: this.locations.totalPages,
+							percentage: 0,
+							chapter: null,
+							html: res.html,
+							text: res.text,
+							styles: res.styles,
+							cfi: res.cfi
+						};
+					});
+				}
+
+				let section = this.spine.get(pageInfo.sectionIndex);
+				if (!section) {
+					section = this.spine.get(pageInfo.href);
+				}
+
+				return section.getPageHTML(pageInfo.startCfi, pageInfo.endCfi, options, this.load.bind(this)).then(res => {
+					let chapterMarker = null;
+					if (this.navigation) {
+						let markers = this.navigation.getChapterMarkers(this.locations, this.spine);
+						chapterMarker = markers.filter(m => m.page <= page).pop() || null;
+					}
+
+					return {
+						pageNumber: page,
+						totalPages: this.locations.totalPages,
+						percentage: pageInfo.percentage,
+						chapter: chapterMarker,
+						sectionHref: pageInfo.href,
+						startCfi: pageInfo.startCfi,
+						endCfi: pageInfo.endCfi,
+						html: res.html,
+						text: res.text,
+						styles: res.styles,
+						cfi: res.cfi
+					};
+				});
+			});
+		});
+	}
+
+	/**
+	 * Get page by CFI string
+	 * @param {string|EpubCFI} cfi
+	 * @param {object} [options]
+	 * @return {Promise<object>}
+	 */
+	getPageByCfi(cfi, options = {}) {
+		return this.ready.then(() => {
+			let page = this.locations.pageFromCfi(cfi);
+			return this.getPage(page, options);
 		});
 	}
 

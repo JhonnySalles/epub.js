@@ -21,6 +21,7 @@ class Locations {
 
 		this._locations = [];
 		this._locationsWords = [];
+		this._pages = [];
 		this.total = 0;
 
 		this.break = 150;
@@ -471,8 +472,262 @@ class Locations {
 	/**
 	 * Locations length
 	 */
-	length () {
-		return this._locations.length;
+	/**
+	 * Generate faithful, accurate page boundaries based on layout parameters
+	 * @param {object} [layoutSettings]
+	 * @param {number} [layoutSettings.width=800] target width
+	 * @param {number} [layoutSettings.height=600] target height
+	 * @param {number} [layoutSettings.charsPerPage] fallback characters per page
+	 * @return {Promise<Array<object>>} pages list
+	 */
+	generateTrueLocations(layoutSettings = {}) {
+		this.q.pause();
+		this._pages = [];
+		this._locations = [];
+
+		let width = layoutSettings.width || 800;
+		let height = layoutSettings.height || 600;
+		let charsPerPage = layoutSettings.charsPerPage || (layoutSettings.chars ? layoutSettings.chars : Math.max(500, Math.round((width * height) / 500)));
+		this.break = charsPerPage;
+
+		this.spine.each((section) => {
+			if (section.linear) {
+				this.q.enqueue(this.processTrueLocations.bind(this), section, charsPerPage, layoutSettings);
+			}
+		});
+
+		return this.q.run().then(() => {
+			let total = this._pages.length;
+			for (let i = 0; i < total; i++) {
+				this._pages[i].page = i + 1;
+				this._pages[i].totalPages = total;
+				this._pages[i].percentage = total > 1 ? (i / (total - 1)) : 0;
+			}
+			this.total = this._locations.length - 1;
+			if (this._currentCfi) {
+				this.currentLocation = this._currentCfi;
+			}
+			return this._pages;
+		});
+	}
+
+	processTrueLocations(section, charsPerPage, layoutSettings) {
+		return section.load(this.request).then((contents) => {
+			let completed = new defer();
+			let sectionPages = this.parseTrueLocations(contents, section, charsPerPage, layoutSettings);
+
+			for (let i = 0; i < sectionPages.length; i++) {
+				this._pages.push(sectionPages[i]);
+				this._locations.push(sectionPages[i].startCfi);
+			}
+
+			section.unload();
+			this.processingTimeout = setTimeout(() => completed.resolve(sectionPages), this.pause);
+			return completed.promise;
+		});
+	}
+
+	parseTrueLocations(contents, section, charsPerPage, layoutSettings) {
+		let pages = [];
+		let cfiBase = section.cfiBase;
+		let doc = contents.ownerDocument || contents;
+		let body = qs(doc, "body");
+		if (!body) {
+			return pages;
+		}
+
+		let textNodes = [];
+		let walker = function(node) {
+			if (node.nodeType === 3 && node.textContent.trim().length > 0) {
+				textNodes.push(node);
+			}
+		};
+		sprint(body, walker);
+
+		if (textNodes.length === 0) {
+			let emptyCfi = new EpubCFI(body, cfiBase).toString();
+			pages.push({
+				startCfi: emptyCfi,
+				endCfi: emptyCfi,
+				cfi: emptyCfi,
+				sectionIndex: section.index,
+				href: section.href,
+				spinePos: section.index
+			});
+			return pages;
+		}
+
+		let currentPageStartNode = textNodes[0];
+		let currentPageStartOffset = 0;
+		let currentChars = 0;
+
+		for (let i = 0; i < textNodes.length; i++) {
+			let node = textNodes[i];
+			let len = node.length || node.textContent.length;
+			let offset = 0;
+
+			while (offset < len) {
+				let remainingInPage = charsPerPage - currentChars;
+				let remainingInNode = len - offset;
+
+				if (remainingInNode < remainingInPage) {
+					currentChars += remainingInNode;
+					offset = len;
+				} else {
+					let breakOffset = offset + remainingInPage;
+					let startRange = this.createRange();
+					startRange.startContainer = currentPageStartNode;
+					startRange.startOffset = currentPageStartOffset;
+					startRange.endContainer = currentPageStartNode;
+					startRange.endOffset = currentPageStartOffset;
+
+					let endRange = this.createRange();
+					endRange.startContainer = node;
+					endRange.startOffset = breakOffset;
+					endRange.endContainer = node;
+					endRange.endOffset = breakOffset;
+
+					let startCfi = new EpubCFI(startRange, cfiBase).toString();
+					let endCfi = new EpubCFI(endRange, cfiBase).toString();
+
+					pages.push({
+						startCfi: startCfi,
+						endCfi: endCfi,
+						cfi: startCfi,
+						sectionIndex: section.index,
+						href: section.href,
+						spinePos: section.index
+					});
+
+					currentPageStartNode = node;
+					currentPageStartOffset = breakOffset;
+					currentChars = 0;
+					offset = breakOffset;
+				}
+			}
+		}
+
+		let lastNode = textNodes[textNodes.length - 1];
+		let startRange = this.createRange();
+		startRange.startContainer = currentPageStartNode;
+		startRange.startOffset = currentPageStartOffset;
+		startRange.endContainer = currentPageStartNode;
+		startRange.endOffset = currentPageStartOffset;
+
+		let endRange = this.createRange();
+		endRange.startContainer = lastNode;
+		endRange.endOffset = lastNode.length || lastNode.textContent.length;
+		endRange.endContainer = lastNode;
+		endRange.startOffset = endRange.endOffset;
+
+		let startCfi = new EpubCFI(startRange, cfiBase).toString();
+		let endCfi = new EpubCFI(endRange, cfiBase).toString();
+
+		pages.push({
+			startCfi: startCfi,
+			endCfi: endCfi,
+			cfi: startCfi,
+			sectionIndex: section.index,
+			href: section.href,
+			spinePos: section.index
+		});
+
+		return pages;
+	}
+
+	/**
+	 * Get page number (1-indexed) from an EpubCFI
+	 * @param {string|EpubCFI} cfi
+	 * @return {number} page number (1 to totalPages)
+	 */
+	pageFromCfi(cfi) {
+		if (!this._pages || this._pages.length === 0) {
+			try {
+				let loc = this.locationFromCfi(cfi);
+				return loc >= 0 ? loc + 1 : 1;
+			} catch (e) {
+				return 1;
+			}
+		}
+
+		try {
+			let cfiObj = cfi;
+			if (EpubCFI.prototype.isCfiString(cfi)) {
+				cfiObj = new EpubCFI(cfi);
+			}
+
+			let loc = locationOf(cfiObj, this._locations, this.epubcfi.compare);
+			if (loc >= this._pages.length) {
+				return this._pages.length;
+			}
+			if (loc < 0) {
+				return 1;
+			}
+			return loc + 1;
+		} catch (e) {
+			return 1;
+		}
+	}
+
+	/**
+	 * Get CFI string from page number (1-indexed)
+	 * @param {number} page
+	 * @return {string} cfi
+	 */
+	cfiFromPage(page) {
+		if (!this._pages || this._pages.length === 0) {
+			return this.cfiFromLocation(page - 1);
+		}
+		let index = Math.max(0, Math.min(this._pages.length - 1, page - 1));
+		if (this._pages[index]) {
+			return this._pages[index].startCfi;
+		}
+		return this.cfiFromLocation(index);
+	}
+
+	/**
+	 * Get detailed page info
+	 * @param {number} page 1-indexed
+	 * @return {object|null}
+	 */
+	pageInfo(page) {
+		if (!this._pages || this._pages.length === 0) {
+			return null;
+		}
+		let index = Math.max(0, Math.min(this._pages.length - 1, page - 1));
+		return this._pages[index] || null;
+	}
+
+	/**
+	 * Total faithful pages count
+	 * @return {number}
+	 */
+	get totalPages() {
+		return this._pages ? this._pages.length : (this._locations ? this._locations.length : 0);
+	}
+
+	/**
+	 * Save pages to JSON string
+	 * @return {string}
+	 */
+	savePages() {
+		return JSON.stringify(this._pages || []);
+	}
+
+	/**
+	 * Load pages from JSON string or array
+	 * @param {string|Array} pagesData
+	 * @return {Array}
+	 */
+	loadPages(pagesData) {
+		if (typeof pagesData === "string") {
+			this._pages = JSON.parse(pagesData);
+		} else {
+			this._pages = pagesData || [];
+		}
+		this._locations = this._pages.map(p => p.startCfi);
+		this.total = this._locations.length - 1;
+		return this._pages;
 	}
 
 	destroy () {
@@ -484,7 +739,8 @@ class Locations {
 		this.q = undefined;
 		this.epubcfi = undefined;
 
-		this._locations = undefined
+		this._locations = undefined;
+		this._pages = undefined;
 		this.total = undefined;
 
 		this.break = undefined;

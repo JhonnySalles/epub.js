@@ -1,4 +1,4 @@
-import {qs, qsa, querySelectorByType, filterChildren, getParentByTagName} from "./utils/core";
+import {qs, qsa, querySelectorByType, filterChildren, findChildren, getParentByTagName} from "./utils/core";
 
 /**
  * Navigation Parser
@@ -170,10 +170,11 @@ class Navigation {
 		const result = [];
 
 		if (!navListHtml) return result;
-		if (!navListHtml.children) return result;
+		const children = navListHtml.children || findChildren(navListHtml);
+		if (!children) return result;
 		
-		for (let i = 0; i < navListHtml.children.length; i++) {
-			const item = this.navItem(navListHtml.children[i], parent);
+		for (let i = 0; i < children.length; i++) {
+			const item = this.navItem(children[i], parent);
 
 			if (item) {
 				result.push(item);
@@ -351,6 +352,124 @@ class Navigation {
 	 */
 	forEach(fn) {
 		return this.toc.forEach(fn);
+	}
+
+	/**
+	 * Get enriched chapter markers with page numbers, percentages, and CFIs
+	 * @param {Locations} [locations] Locations instance with generated locations/pages
+	 * @param {Spine} [spine] Spine instance to resolve section hrefs
+	 * @return {Array<object>} list of chapter markers
+	 */
+	getChapterMarkers(locations, spine) {
+		let markers = [];
+		let totalPages = locations ? (locations.totalPages || (locations.total ? locations.total + 1 : 1)) : 1;
+
+		let processItem = (item, level = 0) => {
+			let page = 1;
+			let cfi = null;
+			let percentage = 0;
+			let href = item.href || "";
+			let cleanHref = href.split("#")[0];
+			let targetId = href.indexOf("#") !== -1 ? href.slice(href.indexOf("#") + 1) : null;
+			let section = (spine && cleanHref) ? (spine.get(cleanHref) || spine.get(href)) : null;
+
+			// Match exact page from locations._pages first
+			let pageItem = null;
+			if (locations && locations._pages && locations._pages.length > 0) {
+				pageItem = locations._pages.find(p => p.href === cleanHref || (p.href && cleanHref && p.href.endsWith(cleanHref)));
+				if (!pageItem && section) {
+					pageItem = locations._pages.find(p => p.sectionIndex === section.index);
+				}
+				if (pageItem) {
+					page = pageItem.page;
+					cfi = pageItem.startCfi;
+					percentage = pageItem.percentage;
+				}
+			}
+
+			// If targetId is specified and section document is available, resolve element CFI
+			if (targetId && section && section.document) {
+				let el = section.document.getElementById(targetId);
+				if (el) {
+					try {
+						let elCfi = section.cfiFromElement(el);
+						if (elCfi) {
+							cfi = elCfi;
+							if (locations && typeof locations.pageFromCfi === "function") {
+								let p = locations.pageFromCfi(cfi);
+								if (p) page = p;
+							}
+						}
+					} catch (e) {
+						// safely continue
+					}
+				}
+			}
+
+			if (!cfi && section && section.cfiBase) {
+				cfi = `epubcfi(${section.cfiBase}!/4/1:0)`;
+			}
+
+			if (!pageItem && cfi && locations) {
+				try {
+					if (typeof locations.pageFromCfi === "function") {
+						page = locations.pageFromCfi(cfi);
+					} else if (typeof locations.locationFromCfi === "function") {
+						let loc = locations.locationFromCfi(cfi);
+						page = loc >= 0 ? loc + 1 : 1;
+					}
+					if (typeof locations.percentageFromCfi === "function") {
+						percentage = locations.percentageFromCfi(cfi) || 0;
+					}
+				} catch (e) {
+					// safely continue
+				}
+			} else if (!pageItem && locations && totalPages > 1) {
+				percentage = totalPages > 1 ? ((page - 1) / (totalPages - 1)) : 0;
+			}
+
+			let marker = {
+				id: item.id || href,
+				href: href,
+				label: item.label ? item.label.trim() : "",
+				level: level,
+				page: page,
+				cfi: cfi,
+				percentage: percentage,
+				subitems: []
+			};
+
+			if (item.subitems && item.subitems.length) {
+				marker.subitems = item.subitems.map(sub => processItem(sub, level + 1));
+			}
+
+			return marker;
+		};
+
+		markers = this.toc.map(item => processItem(item, 0));
+
+		let flatList = [];
+		let flatten = (list) => {
+			list.forEach(m => {
+				flatList.push(m);
+				if (m.subitems && m.subitems.length) {
+					flatten(m.subitems);
+				}
+			});
+		};
+		flatten(markers);
+
+		for (let i = 0; i < flatList.length; i++) {
+			let current = flatList[i];
+			let next = flatList[i + 1];
+			if (next && next.page >= current.page) {
+				current.pageCount = Math.max(1, next.page - current.page);
+			} else {
+				current.pageCount = Math.max(1, (totalPages - current.page) + 1);
+			}
+		}
+
+		return markers;
 	}
 }
 

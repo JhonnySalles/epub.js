@@ -126,7 +126,9 @@ class Queue {
 			this.defered = new defer();
 		}
 
-		this.tick.call(window, () => {
+		let tick = (typeof window !== "undefined" && this.tick) ? this.tick.bind(window) : (fn) => setTimeout(fn, 0);
+
+		tick(() => {
 
 			if(this._q.length) {
 

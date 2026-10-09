@@ -84,6 +84,9 @@ class Rendition {
 		this.hooks.layout = new Hook(this);
 		this.hooks.render = new Hook(this);
 		this.hooks.show = new Hook(this);
+		this.hooks.transition = new Hook(this);
+
+		this.transition = null;
 
 		this.hooks.content.register(this.handleLinks.bind(this));
 		this.hooks.content.register(this.passEvents.bind(this));
@@ -529,12 +532,149 @@ class Rendition {
 	}
 
 	/**
+	 * Configure transition animation
+	 * @param {string|object|function} transition 'curl' | 'slide' | 'fade' | { name, duration } | customFunction
+	 */
+	setTransition(transition) {
+		if (typeof transition === "string") {
+			this.transition = { name: transition, duration: 400 };
+		} else if (typeof transition === "function") {
+			this.transition = { fn: transition, duration: 400 };
+		} else {
+			this.transition = transition;
+		}
+		return this;
+	}
+
+	/**
+	 * Run page transition animation if configured
+	 * @private
+	 * @param {string} direction 'next' | 'prev'
+	 * @param {Function} changeAction
+	 * @return {Promise}
+	 */
+	applyTransition(direction, changeAction) {
+		if (!this.transition || typeof document === "undefined") {
+			return changeAction();
+		}
+
+		let container = this.manager && this.manager.container ? this.manager.container : null;
+		let duration = this.transition.duration || 400;
+
+		this.emit(EVENTS.RENDITION.TRANSITION_START, {
+			direction: direction,
+			transition: this.transition
+		});
+
+		let performAnimation = () => {
+			if (typeof this.transition.fn === "function") {
+				return Promise.resolve(this.transition.fn(container, direction, duration, this));
+			}
+
+			if (!container) {
+				return Promise.resolve();
+			}
+
+			let animName = this.transition.name || "slide";
+
+			if (!document.getElementById("epubjs-transition-styles")) {
+				let style = document.createElement("style");
+				style.id = "epubjs-transition-styles";
+				style.textContent = `
+					.epubjs-transitioning {
+						perspective: 1500px;
+						overflow: hidden !important;
+					}
+					.epubjs-anim-curl-next {
+						transform-origin: left center;
+						animation: epubjsCurlNext 0.4s ease-in-out forwards;
+					}
+					.epubjs-anim-curl-prev {
+						transform-origin: right center;
+						animation: epubjsCurlPrev 0.4s ease-in-out forwards;
+					}
+					.epubjs-anim-slide-next {
+						animation: epubjsSlideNext 0.3s ease-out forwards;
+					}
+					.epubjs-anim-slide-prev {
+						animation: epubjsSlidePrev 0.3s ease-out forwards;
+					}
+					.epubjs-anim-fade {
+						animation: epubjsFade 0.3s ease-in-out forwards;
+					}
+					@keyframes epubjsCurlNext {
+						0% { transform: rotateY(0deg); box-shadow: 0 0 0 rgba(0,0,0,0); }
+						50% { transform: rotateY(-35deg) skewY(2deg); box-shadow: -15px 5px 25px rgba(0,0,0,0.3); }
+						100% { transform: rotateY(0deg); box-shadow: 0 0 0 rgba(0,0,0,0); }
+					}
+					@keyframes epubjsCurlPrev {
+						0% { transform: rotateY(0deg); box-shadow: 0 0 0 rgba(0,0,0,0); }
+						50% { transform: rotateY(35deg) skewY(-2deg); box-shadow: 15px 5px 25px rgba(0,0,0,0.3); }
+						100% { transform: rotateY(0deg); box-shadow: 0 0 0 rgba(0,0,0,0); }
+					}
+					@keyframes epubjsSlideNext {
+						0% { transform: translateX(0); opacity: 1; }
+						49% { transform: translateX(-15px); opacity: 0.6; }
+						50% { transform: translateX(15px); opacity: 0.6; }
+						100% { transform: translateX(0); opacity: 1; }
+					}
+					@keyframes epubjsSlidePrev {
+						0% { transform: translateX(0); opacity: 1; }
+						49% { transform: translateX(15px); opacity: 0.6; }
+						50% { transform: translateX(-15px); opacity: 0.6; }
+						100% { transform: translateX(0); opacity: 1; }
+					}
+					@keyframes epubjsFade {
+						0% { opacity: 1; }
+						50% { opacity: 0.3; }
+						100% { opacity: 1; }
+					}
+				`;
+				document.head.appendChild(style);
+			}
+
+			container.classList.add("epubjs-transitioning");
+			let animClass = "";
+			if (animName === "curl") {
+				animClass = direction === "next" ? "epubjs-anim-curl-next" : "epubjs-anim-curl-prev";
+			} else if (animName === "fade") {
+				animClass = "epubjs-anim-fade";
+			} else {
+				animClass = direction === "next" ? "epubjs-anim-slide-next" : "epubjs-anim-slide-prev";
+			}
+
+			container.classList.add(animClass);
+
+			return new Promise((resolve) => {
+				setTimeout(() => {
+					container.classList.remove(animClass);
+					container.classList.remove("epubjs-transitioning");
+					resolve();
+				}, duration);
+			});
+		};
+
+		return this.hooks.transition.trigger(direction, this).then(() => {
+			let animPromise = performAnimation();
+			return changeAction().then((result) => {
+				return animPromise.then(() => {
+					this.emit(EVENTS.RENDITION.TRANSITION_END, {
+						direction: direction
+					});
+					return result;
+				});
+			});
+		});
+	}
+
+	/**
 	 * Go to the next "page" in the rendition
 	 * @return {Promise}
 	 */
 	next(){
-		return this.q.enqueue(this.manager.next.bind(this.manager))
-			.then(this.reportLocation.bind(this));
+		return this.q.enqueue(() => {
+			return this.applyTransition("next", () => this.manager.next());
+		}).then(this.reportLocation.bind(this));
 	}
 
 	/**
@@ -542,8 +682,32 @@ class Rendition {
 	 * @return {Promise}
 	 */
 	prev(){
-		return this.q.enqueue(this.manager.prev.bind(this.manager))
-			.then(this.reportLocation.bind(this));
+		return this.q.enqueue(() => {
+			return this.applyTransition("prev", () => this.manager.prev());
+		}).then(this.reportLocation.bind(this));
+	}
+
+	/**
+	 * Get page HTML and text without iframe
+	 * @param {number} pageNumber
+	 * @param {object} [options]
+	 * @return {Promise<object>}
+	 */
+	getPageHTML(pageNumber, options) {
+		return this.book.getPage(pageNumber, options);
+	}
+
+	/**
+	 * Get current visible page HTML and text
+	 * @param {object} [options]
+	 * @return {Promise<object>}
+	 */
+	getCurrentPageHTML(options) {
+		let cfi = this.location && this.location.start ? this.location.start.cfi : null;
+		if (cfi) {
+			return this.book.getPageByCfi(cfi, options);
+		}
+		return this.book.getPage(1, options);
 	}
 
 	//-- http://www.idpf.org/epub/301/spec/epub-publications.html#meta-properties-rendering

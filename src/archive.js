@@ -128,7 +128,7 @@ class Archive {
 	 * @return {Blob}
 	 */
 	getBlob(url, mimeType){
-		var decodededUrl = window.decodeURIComponent(url.substr(1)); // Remove first slash
+		var decodededUrl = decodeURIComponent(url.substr(1)); // Remove first slash
 		var entry = this.zip.file(decodededUrl);
 
 		if(entry) {
@@ -146,7 +146,7 @@ class Archive {
 	 * @return {string}
 	 */
 	getText(url, encoding){
-		var decodededUrl = window.decodeURIComponent(url.substr(1)); // Remove first slash
+		var decodededUrl = decodeURIComponent(url.substr(1)); // Remove first slash
 		var entry = this.zip.file(decodededUrl);
 
 		if(entry) {
@@ -163,7 +163,7 @@ class Archive {
 	 * @return {string} base64 encoded
 	 */
 	getBase64(url, mimeType){
-		var decodededUrl = window.decodeURIComponent(url.substr(1)); // Remove first slash
+		var decodededUrl = decodeURIComponent(url.substr(1)); // Remove first slash
 		var entry = this.zip.file(decodededUrl);
 
 		if(entry) {
@@ -182,7 +182,7 @@ class Archive {
 	 */
 	createUrl(url, options){
 		var deferred = new defer();
-		var _URL = window.URL || window.webkitURL || window.mozURL;
+		var _URL = (typeof window !== "undefined" ? (window.URL || window.webkitURL || window.mozURL) : undefined) || (typeof URL !== "undefined" ? URL : undefined);
 		var tempUrl;
 		var response;
 		var useBase64 = options && options.base64;

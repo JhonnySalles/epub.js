@@ -50,7 +50,9 @@ export const EVENTS = {
     RELOCATED : "relocated",
     MARK_CLICKED : "markClicked",
     SELECTED : "selected",
-    LAYOUT: "layout"
+    LAYOUT: "layout",
+    TRANSITION_START: "transitionStart",
+    TRANSITION_END: "transitionEnd"
   },
   LAYOUT : {
     UPDATED : "updated"
